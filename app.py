@@ -3,6 +3,8 @@ DASHBOARD MONITORING BON SEMENTARA
 Sumber data : tab "Bon" di Google Sheet (diterbitkan sebagai CSV lewat "Publish to web").
 Secret      : BON_CSV_URL  (isi di Streamlit Cloud > App settings > Secrets)
 """
+import io
+import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -41,9 +43,27 @@ st.markdown("""
 
 
 # ---------------------------------------------------------------- pembaca data
+def perbaiki_url(u: str) -> str:
+    """Pastikan link berbentuk CSV hasil Publish to web."""
+    u = u.strip()
+    if "/edit" in u or "/export" in u or "/gviz" in u:
+        raise ValueError("Link yang dipakai bukan link Publish to web. Gunakan link CSV dari "
+                         "File > Share > Publish to web (tab Bon, format CSV).")
+    u = u.replace("/pubhtml", "/pub").replace("output=html", "output=csv")
+    if "output=" not in u:
+        u += ("&" if "?" in u else "?") + "output=csv"
+    return u
+
+
 @st.cache_data(ttl=60, show_spinner="Memuat data bon...")
 def muat(url: str) -> pd.DataFrame:
-    return pd.read_csv(url, dtype=str, keep_default_na=False)
+    req = urllib.request.Request(perbaiki_url(url), headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        teks = r.read().decode("utf-8-sig", errors="replace")
+    if teks.lstrip()[:1] == "<":
+        raise ValueError("Link mengembalikan halaman web, bukan data CSV. Terbitkan ulang tab Bon "
+                         "dengan format CSV (bukan Web page) dan pastikan statusnya Published.")
+    return pd.read_csv(io.StringIO(teks), dtype=str, keep_default_na=False)
 
 
 def tgl(s: pd.Series) -> pd.Series:
