@@ -31,7 +31,8 @@ KOLOM = ["ID", "TglAjuan", "Store", "NIP", "Nama", "Keperluan", "Nominal", "Stat
 KOLOM_TGL = ["TglAjuan", "TglApprove", "TglCair", "TglRealisasi", "TglSelesai"]
 NAVY = colors.HexColor("#1e3a8a")
 MERAH_CSS = "background-color:#fee2e2;color:#7f1d1d;font-weight:600"
-KUNING_CSS = "background-color:#fef3c7;color:#78350f"
+KUNING_CSS = "background-color:#fef3c7;color:#78350f;font-weight:600"
+HIJAU_CSS = "background-color:#dcfce7;color:#14532d"
 
 st.markdown("""
 <style>
@@ -179,6 +180,12 @@ def olah(raw: pd.DataFrame) -> pd.DataFrame:
     df["LamaJam"] = 0
     df.loc[sel, "LamaJam"] = ((now - df.loc[sel, "TglCair"]).dt.total_seconds() // 3600).astype(int)
     df["Gantung"] = sel & (df["LamaJam"] >= BATAS_JAM)
+    # realisasi yang selesai lebih dari 24 jam setelah dicairkan (melanggar WI)
+    ada = df["TglCair"].notna() & df["TglRealisasi"].notna()
+    detik = (df["TglRealisasi"] - df["TglCair"]).dt.total_seconds()
+    df["LamaReal"] = 0
+    df.loc[ada, "LamaReal"] = (detik[ada] // 3600).astype(int)
+    df["Terlambat"] = ada & (detik > BATAS_JAM * 3600)
     df = df.sort_values("TglAjuan", ascending=False)
     # cocokkan kode store dengan master (nama store, FRA, regional)
     try:
@@ -198,6 +205,8 @@ def tanda(r) -> str:
         return f"GANTUNG {r['LamaJam']} JAM"
     if r["Status"] == "Dicairkan":
         return f"Belum realisasi ({r['LamaJam']} jam)"
+    if r["Terlambat"]:
+        return f"Terlambat realisasi ({r['LamaReal']} jam)"
     return ""
 
 
@@ -230,6 +239,8 @@ def buat_pdf(info: str, ringkas: list, gantung: pd.DataFrame, rk: pd.DataFrame, 
                 gaya.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fee2e2")))
             elif w == "kuning":
                 gaya.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fef3c7")))
+            elif w == "hijau":
+                gaya.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#dcfce7")))
         t.setStyle(TableStyle(gaya))
         return t
 
@@ -264,15 +275,15 @@ def buat_pdf(info: str, ringkas: list, gantung: pd.DataFrame, rk: pd.DataFrame, 
     batas = 1500
     dd = det.head(batas)
     rows = [[r.ID, fmt_tgl(r.TglAjuan), r.LabelStore + ("\nFRA: " + r.FRA if r.FRA else ""), f"{r.NIP} - {r.Nama}",
-             r.Keperluan, rp(r.Nominal), r.Status, tanda({"Gantung": r.Gantung, "LamaJam": r.LamaJam, "Status": r.Status})]
+             r.Keperluan, rp(r.Nominal), r.Status, tanda({"Gantung": r.Gantung, "LamaJam": r.LamaJam, "Status": r.Status, "Terlambat": r.Terlambat, "LamaReal": r.LamaReal})]
             for r in dd.itertuples()]
-    warna = ["merah" if r.Gantung else ("kuning" if r.Status == "Dicairkan" else None) for r in dd.itertuples()]
+    warna = ["merah" if r.Gantung else ("hijau" if r.Status == "Dicairkan" else ("kuning" if r.Terlambat else None)) for r in dd.itertuples()]
     el.append(tabel(["ID Bon", "Tgl Ajuan", "Store", "Staff", "Keperluan", "Nominal", "Status", "Tanda"], rows,
                     [25, 25, 54, 40, 50, 24, 22, 33], warna))
     if len(det) > batas:
         el.append(Paragraph(f"Hanya {batas} baris pertama yang dicetak dari total {len(det)} baris.", kecil))
     el.append(Spacer(1, 4))
-    el.append(Paragraph("Merah = gantung lebih dari 24 jam. Kuning = sudah dicairkan, belum direalisasi (masih dalam 24 jam).", kecil))
+    el.append(Paragraph("Merah = gantung lebih dari 24 jam. Hijau = sudah dicairkan, belum direalisasi (masih dalam 24 jam). Kuning = realisasi selesai lebih dari 24 jam (tidak sesuai WI).", kecil))
     doc.build(el, onFirstPage=kaki, onLaterPages=kaki)
     return buf.getvalue()
 
@@ -371,7 +382,7 @@ with k[4]: kpi(f"GANTUNG &gt; {BATAS_JAM} JAM", len(gantung), "semua periode", m
 n = per["Status"].value_counts()
 st.markdown('<div class="strip">' + "".join(f"<span>{t}<b>{int(n.get(s, 0))}</b></span>" for t, s in [
     ("MENUNGGU APPROVAL", "Diajukan"), ("MENUNGGU PENCAIRAN", "Disetujui"),
-    ("MENUNGGU VERIFIKASI", "Direalisasi"), ("SELESAI", "Selesai"), ("DITOLAK", "Ditolak")]) + "</div>",
+    ("MENUNGGU VERIFIKASI", "Direalisasi"), ("SELESAI", "Selesai"), ("DITOLAK", "Ditolak")]) + f"<span>REALISASI TERLAMBAT<b>{int(per['Terlambat'].sum())}</b></span></div>",
     unsafe_allow_html=True)
 
 # ---- bon gantung
@@ -408,7 +419,8 @@ else:
 # ---- daftar bon
 st.markdown('<div class="bagian">DAFTAR BON (TERBARU DI ATAS)</div>', unsafe_allow_html=True)
 st.markdown('<div class="legend"><i style="background:#fecaca"></i>Merah: gantung lebih dari 24 jam'
-            '<i style="background:#fde68a"></i>Kuning: sudah dicairkan, belum direalisasi (masih dalam 24 jam)</div>',
+            '<i style="background:#bbf7d0"></i>Hijau: sudah dicairkan, belum direalisasi (masih dalam 24 jam)'
+            '<i style="background:#fde68a"></i>Kuning: realisasi lebih dari 24 jam (tidak sesuai WI)</div>',
             unsafe_allow_html=True)
 det = per if status == "SEMUA STATUS" else per[per["Status"] == status]
 if det.empty:
@@ -425,8 +437,8 @@ else:
     ext.loc[det["TglRealisasi"].isna(), ["Terpakai", "Sisa/(Kurang)"]] = ""
     t = pd.concat([t, ext], axis=1)
     t["Foto"] = det["FotoID"].map(lambda x: "Ada" if str(x).strip() else "-")
-    warna = pd.Series(["m" if g else ("k" if s == "Dicairkan" else "") for g, s in zip(det["Gantung"], det["Status"])], index=det.index)
-    css = {"m": MERAH_CSS, "k": KUNING_CSS, "": ""}
+    warna = pd.Series(["m" if g else ("h" if s == "Dicairkan" else ("k" if tl else "")) for g, s, tl in zip(det["Gantung"], det["Status"], det["Terlambat"])], index=det.index)
+    css = {"m": MERAH_CSS, "h": HIJAU_CSS, "k": KUNING_CSS, "": ""}
     st.dataframe(t.style.apply(lambda r: [css[warna[r.name]]] * len(r), axis=1), use_container_width=True, hide_index=True)
 
 # ---- ekspor (PDF dan CSV)
