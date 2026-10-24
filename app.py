@@ -96,6 +96,21 @@ def muat_master(url: str) -> pd.DataFrame:
     return ambil_csv(url)
 
 
+def arsip_ids() -> dict:
+    """Secret ARSIP_IDS berbentuk: 2026=ID_FILE_ARSIP,2027=ID_FILE_ARSIP"""
+    out = {}
+    for bagian in rahasia("ARSIP_IDS").split(","):
+        if "=" in bagian:
+            th, sid = bagian.split("=", 1)
+            out[th.strip()] = sid.strip()
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def muat_arsip(sid: str, bln: str) -> pd.DataFrame:
+    return ambil_csv(f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={bln}")
+
+
 def url_master() -> str:
     u = rahasia("MASTER_CSV_URL")
     if u:
@@ -285,12 +300,6 @@ url = rahasia("BON_CSV_URL")
 if not url:
     st.error("BON_CSV_URL belum diisi di Secrets. Lihat panduan pemasangan.")
     st.stop()
-try:
-    data = olah(muat_bon(url))
-except Exception as e:  # noqa: BLE001
-    st.error(f"Data tidak bisa dibaca dari Google Sheet: {e}")
-    st.stop()
-
 sekarang = datetime.now(TZ)
 h1, h2, h3, h4 = st.columns([5, 1.1, 1.1, 1.1])
 with h1:
@@ -304,11 +313,31 @@ with h2:
 slot_pdf, slot_csv = h3.empty(), h4.empty()
 
 bulan_ini = sekarang.strftime("%Y-%m")
-bulan_ada = sorted(data["Bulan"].dropna().unique(), reverse=True)
-if bulan_ini not in bulan_ada:
-    bulan_ada.insert(0, bulan_ini)
+bulan_opsi, y_, m_ = [], sekarang.year, sekarang.month
+for _ in range(12):
+    bulan_opsi.append(f"{y_}-{m_:02d}")
+    m_ -= 1
+    if m_ == 0:
+        y_, m_ = y_ - 1, 12
 f = st.columns(4)
-periode = f[0].selectbox("Periode", ["SEMUA PERIODE"] + bulan_ada, index=1)
+periode = f[0].selectbox("Periode", ["SEMUA PERIODE"] + bulan_opsi, index=1,
+                         help="SEMUA PERIODE = 12 bulan terakhir ditambah bon yang masih aktif.")
+try:
+    raws, ids = [muat_bon(url)], arsip_ids()
+    for b_ in (bulan_opsi if periode == "SEMUA PERIODE" else [periode]):
+        sid = ids.get(b_[:4])
+        if not sid:
+            continue
+        try:
+            raws.append(muat_arsip(sid, b_))
+        except Exception:  # noqa: BLE001
+            pass  # tab arsip bulan itu belum ada
+    data = olah(pd.concat(raws, ignore_index=True).drop_duplicates("ID", keep="first"))
+except Exception as e:  # noqa: BLE001
+    st.error(f"Data tidak bisa dibaca dari Google Sheet: {e}")
+    st.stop()
+if not arsip_ids() and (periode == "SEMUA PERIODE" or periode != bulan_ini):
+    st.info("Riwayat yang sudah diarsipkan baru tampil setelah ARSIP_IDS diisi di Secrets.")
 reg = f[1].selectbox("Regional", ["SEMUA REGIONAL"] + sorted(x for x in data["Regional"].unique() if x))
 d0 = data if reg == "SEMUA REGIONAL" else data[data["Regional"] == reg]
 fra = f[2].selectbox("FRA", ["SEMUA FRA"] + sorted(x for x in d0["FRA"].unique() if x))
