@@ -23,6 +23,7 @@ st.set_page_config(page_title="Monitoring Bon Sementara", page_icon="🧾",
 
 TZ = ZoneInfo("Asia/Jakarta")
 BATAS_JAM = 24
+BLOKIR_JAM = 72   # 3 x 24 jam: store terkunci untuk pengajuan bon baru
 MASTER_ID = "1vcQ8iIARrUS_L1mXcXFu3d6DWWZgqBESBXSm5FsFRKc"
 
 KOLOM = ["ID", "TglAjuan", "Store", "NIP", "Nama", "Keperluan", "Nominal", "Status", "Approver",
@@ -56,6 +57,15 @@ st.markdown("""
 .legend {font-size:12px; color:#334155; margin:4px 0 6px}
 .legend i {display:inline-block; width:11px; height:11px; border-radius:2px; vertical-align:-1px; margin:0 4px 0 8px}
 .foot {text-align:center; color:#334155; font-size:12px; margin:30px 0 6px; padding-top:10px; border-top:1px solid #cbd5e1}
+[data-testid="stWidgetLabel"] p {color:#0f172a !important; font-weight:600; font-size:13px}
+div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, div[data-baseweb="base-input"] {background:#ffffff !important; border:1px solid #64748b !important; border-radius:6px !important}
+div[data-baseweb="select"] *, div[data-baseweb="input"] input {color:#0f172a !important; -webkit-text-fill-color:#0f172a !important}
+div[data-baseweb="select"] svg {fill:#0f172a !important}
+div[data-baseweb="popover"] ul, div[data-baseweb="popover"] li {background:#ffffff !important; color:#0f172a !important}
+.stButton > button, .stDownloadButton > button {background:#1e3a8a !important; color:#ffffff !important; border:1px solid #1e3a8a !important; border-radius:6px !important; min-height:30px !important; padding:2px 8px !important}
+.stButton > button p, .stDownloadButton > button p {color:#ffffff !important; font-size:12.5px !important; font-weight:600 !important}
+.stButton > button:hover, .stDownloadButton > button:hover {background:#162d6b !important; border-color:#162d6b !important}
+.stButton > button:disabled, .stDownloadButton > button:disabled {background:#94a3b8 !important; border-color:#94a3b8 !important}
 </style>
 """, unsafe_allow_html=True)
 
@@ -180,6 +190,7 @@ def olah(raw: pd.DataFrame) -> pd.DataFrame:
     df["LamaJam"] = 0
     df.loc[sel, "LamaJam"] = ((now - df.loc[sel, "TglCair"]).dt.total_seconds() // 3600).astype(int)
     df["Gantung"] = sel & (df["LamaJam"] >= BATAS_JAM)
+    df["Macet"] = sel & (df["LamaJam"] >= BLOKIR_JAM)
     # realisasi yang selesai lebih dari 24 jam setelah dicairkan (melanggar WI)
     ada = df["TglCair"].notna() & df["TglRealisasi"].notna()
     detik = (df["TglRealisasi"] - df["TglCair"]).dt.total_seconds()
@@ -202,7 +213,7 @@ def olah(raw: pd.DataFrame) -> pd.DataFrame:
 
 def tanda(r) -> str:
     if r["Gantung"]:
-        return f"GANTUNG {r['LamaJam']} JAM"
+        return f"GANTUNG {r['LamaJam']} JAM" + (", STORE TERKUNCI" if r.get("Macet", False) else "")
     if r["Status"] == "Dicairkan":
         return f"Belum realisasi ({r['LamaJam']} jam)"
     if r["Terlambat"]:
@@ -266,16 +277,16 @@ def buat_pdf(info: str, ringkas: list, gantung: pd.DataFrame, rk: pd.DataFrame, 
     if len(rk):
         el.append(Paragraph("RINGKASAN PER STORE", bag))
         rows = [[r.LabelStore, r.FRA, r.Regional, int(r.Jumlah), rp(r.Diajukan), rp(r.Dicairkan), rp(r.Belum),
-                 int(r.Gantung), int(r.Selesai)] for r in rk.itertuples()]
+                 int(r.Gantung), int(r.Selesai), "TERKUNCI" if r.Macet > 0 else "Normal"] for r in rk.itertuples()]
         el.append(tabel(["Store", "FRA", "Regional", "Jumlah", "Total Diajukan", "Total Dicairkan",
-                         "Belum Direalisasi", "Gantung", "Selesai"], rows, [66, 36, 36, 16, 29, 29, 29, 16, 16],
+                         "Belum Direalisasi", "Gantung", "Selesai", "Pengajuan"], rows, [56, 30, 30, 16, 29, 29, 29, 16, 16, 22],
                         ["merah" if r.Gantung > 0 else None for r in rk.itertuples()]))
 
     el.append(Paragraph("DAFTAR BON", bag))
     batas = 1500
     dd = det.head(batas)
     rows = [[r.ID, fmt_tgl(r.TglAjuan), r.LabelStore + ("\nFRA: " + r.FRA if r.FRA else ""), f"{r.NIP} - {r.Nama}",
-             r.Keperluan, rp(r.Nominal), r.Status, tanda({"Gantung": r.Gantung, "LamaJam": r.LamaJam, "Status": r.Status, "Terlambat": r.Terlambat, "LamaReal": r.LamaReal})]
+             r.Keperluan, rp(r.Nominal), r.Status, tanda({"Gantung": r.Gantung, "LamaJam": r.LamaJam, "Status": r.Status, "Terlambat": r.Terlambat, "LamaReal": r.LamaReal, "Macet": r.Macet})]
             for r in dd.itertuples()]
     warna = ["merah" if r.Gantung else ("hijau" if r.Status == "Dicairkan" else ("kuning" if r.Terlambat else None)) for r in dd.itertuples()]
     el.append(tabel(["ID Bon", "Tgl Ajuan", "Store", "Staff", "Keperluan", "Nominal", "Status", "Tanda"], rows,
@@ -312,7 +323,7 @@ if not url:
     st.error("BON_CSV_URL belum diisi di Secrets. Lihat panduan pemasangan.")
     st.stop()
 sekarang = datetime.now(TZ)
-h1, h2, h3, h4 = st.columns([5, 1.1, 1.1, 1.1])
+h1, h2, h3, h4 = st.columns([9, 1.2, 1.2, 1.2], vertical_alignment="center")
 with h1:
     st.markdown(f'<div class="topbar"><div class="t">MONITORING BON SEMENTARA</div>'
                 f'<div class="s">Diperbarui otomatis tiap 1 menit. Dimuat {sekarang.strftime("%d/%m/%Y %H:%M:%S")} WIB</div></div>',
@@ -368,11 +379,16 @@ per = dasar if periode == "SEMUA PERIODE" else dasar[dasar["Bulan"] == periode]
 cair = per[per["Status"].isin(["Dicairkan", "Direalisasi", "Selesai"])]
 blm = per[per["Status"] == "Dicairkan"]
 gantung = dasar[dasar["Gantung"]].sort_values("LamaJam", ascending=False)
+store_kunci = sorted(gantung[gantung["Macet"]]["Store"].unique())
 
 # ---- peringatan dan ringkasan
 if len(gantung):
     st.markdown(f'<div class="alarm"><b>PERHATIAN:</b> {len(gantung)} bon gantung lebih dari {BATAS_JAM} jam, '
                 f'total {rp(gantung["Nominal"].sum())}. Mohon segera ditindaklanjuti.</div>', unsafe_allow_html=True)
+if store_kunci:
+    st.markdown(f'<div class="alarm"><b>STORE TERKUNCI:</b> {len(store_kunci)} store tidak bisa mengajukan bon baru karena ada bon '
+                f'belum direalisasi lebih dari {BLOKIR_JAM // 24} x 24 jam: {", ".join(store_kunci)}. Manager mohon tindak lanjut.</div>',
+                unsafe_allow_html=True)
 k = st.columns(5)
 with k[0]: kpi("JUMLAH BON", f"{len(per):,}".replace(",", "."), "periode terpilih")
 with k[1]: kpi("TOTAL DIAJUKAN", rp(per["Nominal"].sum()))
@@ -382,7 +398,7 @@ with k[4]: kpi(f"GANTUNG &gt; {BATAS_JAM} JAM", len(gantung), "semua periode", m
 n = per["Status"].value_counts()
 st.markdown('<div class="strip">' + "".join(f"<span>{t}<b>{int(n.get(s, 0))}</b></span>" for t, s in [
     ("MENUNGGU APPROVAL", "Diajukan"), ("MENUNGGU PENCAIRAN", "Disetujui"),
-    ("MENUNGGU VERIFIKASI", "Direalisasi"), ("SELESAI", "Selesai"), ("DITOLAK", "Ditolak")]) + f"<span>REALISASI TERLAMBAT<b>{int(per['Terlambat'].sum())}</b></span></div>",
+    ("MENUNGGU VERIFIKASI", "Direalisasi"), ("SELESAI", "Selesai"), ("DITOLAK", "Ditolak")]) + f"<span>REALISASI TERLAMBAT<b>{int(per['Terlambat'].sum())}</b></span><span>STORE TERKUNCI<b>{len(store_kunci)}</b></span></div>",
     unsafe_allow_html=True)
 
 # ---- bon gantung
@@ -399,7 +415,7 @@ else:
 # ---- ringkasan per store
 st.markdown('<div class="bagian">RINGKASAN PER STORE</div>', unsafe_allow_html=True)
 if per.empty:
-    rk = pd.DataFrame(columns=["LabelStore", "FRA", "Regional", "Jumlah", "Diajukan", "Dicairkan", "Belum", "Gantung", "Selesai"])
+    rk = pd.DataFrame(columns=["LabelStore", "FRA", "Regional", "Jumlah", "Diajukan", "Dicairkan", "Belum", "Gantung", "Macet", "Selesai"])
     st.write("Belum ada data pada periode ini.")
 else:
     rk = per.groupby("Store").agg(Jumlah=("ID", "count"), Diajukan=("Nominal", "sum"),
@@ -407,12 +423,14 @@ else:
     rk["Dicairkan"] = cair.groupby("Store")["Nominal"].sum()
     rk["Belum"] = blm.groupby("Store")["Nominal"].sum()
     rk["Gantung"] = gantung.groupby("Store").size()
+    rk["Macet"] = gantung[gantung["Macet"]].groupby("Store").size()
     rk = rk.fillna(0).join(data.drop_duplicates("Store").set_index("Store")[["LabelStore", "FRA", "Regional"]])
     rk = rk.sort_values(["Gantung", "Belum"], ascending=False).reset_index(drop=True)
     tr = pd.DataFrame({"Store": rk["LabelStore"], "FRA": rk["FRA"], "Regional": rk["Regional"],
                        "Jumlah Bon": rk["Jumlah"].astype(int), "Total Diajukan": rk["Diajukan"].map(rp),
                        "Total Dicairkan": rk["Dicairkan"].map(rp), "Belum Direalisasi": rk["Belum"].map(rp),
-                       "Bon Gantung": rk["Gantung"].astype(int), "Selesai": rk["Selesai"].astype(int)})
+                       "Bon Gantung": rk["Gantung"].astype(int), "Selesai": rk["Selesai"].astype(int),
+                       "Pengajuan Bon": rk["Macet"].map(lambda x: "TERKUNCI" if x > 0 else "Normal")})
     st.dataframe(tr.style.apply(lambda r: [MERAH_CSS if rk.loc[r.name, "Gantung"] > 0 else ""] * len(r), axis=1),
                  use_container_width=True, hide_index=True)
 
@@ -448,7 +466,7 @@ ringkas = [("JUMLAH BON", len(per)), ("TOTAL DIAJUKAN", rp(per["Nominal"].sum())
            ("TOTAL DICAIRKAN", rp(cair["Nominal"].sum())), ("BELUM DIREALISASI", rp(blm["Nominal"].sum())),
            (f"GANTUNG > {BATAS_JAM} JAM", len(gantung)), ("MENUNGGU APPROVAL", int(n.get("Diajukan", 0))),
            ("MENUNGGU PENCAIRAN", int(n.get("Disetujui", 0))), ("MENUNGGU VERIFIKASI", int(n.get("Direalisasi", 0))),
-           ("SELESAI", int(n.get("Selesai", 0)))]
+           ("SELESAI", int(n.get("Selesai", 0))), ("STORE TERKUNCI", len(store_kunci))]
 nama_file = f"monitoring_bon_{periode}_{sekarang.strftime('%Y%m%d_%H%M')}"
 try:
     pdf = buat_pdf(info, ringkas, gantung, rk, det)
